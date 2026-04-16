@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# cc-delegate-send — paste a follow-up prompt into an existing cc-delegate sub-session.
+# Usage: cc-delegate-send <ws_ref> <surface_ref>
+# Prompt is read from stdin.
+#
+# On success, prints to stdout:
+#   nonce=CC_DELEGATE_DONE_<rand>
+# The nonce is appended to the prompt as a completion sentinel; use it with
+# `cc-delegate-read --wait-for $nonce` if you want to block on completion.
+
+set -euo pipefail
+
+if [ $# -ne 2 ]; then
+    echo "Usage: cc-delegate-send <ws_ref> <surface_ref>" >&2
+    echo "(prompt is read from stdin)" >&2
+    exit 1
+fi
+
+WS_REF="$1"
+SURFACE_REF="$2"
+
+NONCE="CC_DELEGATE_DONE_$(openssl rand -hex 6)"
+
+PROMPT=$(cat)
+PROMPT="${PROMPT}
+
+When you have finished answering, print exactly this string on its own final line (nothing else on that line): ${NONCE}"
+
+cmux send --workspace "$WS_REF" --surface "$SURFACE_REF" -- "$PROMPT" >/dev/null
+
+if ! cmux send-key --workspace "$WS_REF" --surface "$SURFACE_REF" enter >/dev/null 2>&1; then
+    if ! cmux send-key --workspace "$WS_REF" --surface "$SURFACE_REF" return >/dev/null 2>&1; then
+        echo "ERROR: could not send Enter/Return to surface $SURFACE_REF" >&2
+        exit 1
+    fi
+fi
+
+echo "nonce=$NONCE"
