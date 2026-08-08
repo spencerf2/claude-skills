@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# cc-delegate-read-core — shared implementation for the cc-delegate-read/close wrappers.
+# Do not invoke directly from SKILL.md; use the bin/cc-delegate-{read,read-close,
+# read-wait,read-wait-close,close} wrappers instead.
+#
+# Usage: cc-delegate-read-core --mode MODE <ws_ref> <surface_ref> [<nonce>]
+#
+# Modes:
+#   read              Read scrollback once and exit.
+#   read-close        Read scrollback, then close the tab.
+#   read-wait         Poll for nonce, then read scrollback (no close). Requires <nonce>.
+#   read-wait-close   Poll for nonce, read, then close. Requires <nonce>.
+#   close             Close the tab without reading. Do not pass <nonce>.
+#
+# Poll behavior: every 5s, looks for the nonce to appear >=2 times in the buffer
+# (once from the pasted prompt, once from sub-cc's reply). Times out after ~9 min
+# and exits 2. On timeout, prints whatever scrollback exists so far.
+#
+# Close behavior: sends Ctrl+C twice to gracefully exit cc, then destroys the tab.
+
+set -euo pipefail
+
+MODE=""
+WS_REF=""
+SURFACE_REF=""
+WAIT_FOR=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --mode)
+            if [ $# -lt 2 ]; then
+                echo "ERROR: --mode requires a value" >&2
+                exit 1
+            fi
+            MODE="$2"
+            shift 2
+            ;;
+        --help|-h)
+            sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0
+            ;;
+        -*)
+            echo "ERROR: unknown flag: $1" >&2
+            exit 1
+            ;;
+        *)
+            if [ -z "$WS_REF" ]; then
+                WS_REF="$1"
+            elif [ -z "$SURFACE_REF" ]; then
+                SURFACE_REF="$1"
+            elif [ -z "$WAIT_FOR" ]; then
+                WAIT_FOR="$1"
+            else
+                echo "ERROR: unexpected positional argument: $1" >&2
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
+
+case "$MODE" in
+    read|read-close|close) ;;
+    read-wait|read-wait-close)
+        if [ -z "$WAIT_FOR" ]; then
+            echo "ERROR: mode $MODE requires a nonce as the third positional argument" >&2
+            exit 1
+        fi
+        ;;
+    "") echo "ERROR: --mode is required" >&2; exit 1 ;;
+    *)  echo "ERROR: invalid --mode: $MODE" >&2; exit 1 ;;
+esac
+
+if [ -z "$WS_REF" ] || [ -z "$SURFACE_REF" ]; then
+    echo "Usage: cc-delegate-read-core --mode MODE <ws_ref> <surface_ref> [<nonce>]" >&2
+    exit 1
+fi
+
+DO_READ=1
+DO_CLOSE=0
+case "$MODE" in
+    read)             DO_READ=1; DO_CLOSE=0 ;;
+    read-close)       DO_READ=1; DO_CLOSE=1 ;;
+    read-wait)        DO_READ=1; DO_CLOSE=0 ;;
+    read-wait-close)  DO_READ=1; DO_CLOSE=1 ;;
+    close)            DO_READ=0; DO_CLOSE=1 ;;
+esac
+
+if [ -n "$WAIT_FOR" ]; then
+    MAX_ITERATIONS=108  # 108 * 5s = 9 min
+    i=0
+    while [ $i -lt $MAX_ITERATIONS ]; do
+        count=$(cmux read-screen --workspace "$WS_REF" --surface "$SURFACE_REF" --scrollback 2>/dev/null | grep -cF "$WAIT_FOR" || true)
+        if [ "${count:-0}" -ge 2 ]; then
+            break
+        fi
+        sleep 5
+        i=$((i+1))
+    done
+    if [ $i -ge $MAX_ITERATIONS ]; then
+        echo "ERROR: timed out after 9 minutes waiting for nonce $WAIT_FOR" >&2
+        cmux read-screen --workspace "$WS_REF" --surface "$SURFACE_REF" --scrollback
+        exit 2
+    fi
+fi
+
+if [ $DO_READ -eq 1 ]; then
+    cmux read-screen --workspace "$WS_REF" --surface "$SURFACE_REF" --scrollback
+fi
+
+if [ $DO_CLOSE -eq 1 ]; then
+    cmux send-key --workspace "$WS_REF" --surface "$SURFACE_REF" ctrl+c >/dev/null 2>&1 || true
+    sleep 1
+    cmux send-key --workspace "$WS_REF" --surface "$SURFACE_REF" ctrl+c >/dev/null 2>&1 || true
+    sleep 1
+    cmux close-surface --workspace "$WS_REF" --surface "$SURFACE_REF" >/dev/null
+fi

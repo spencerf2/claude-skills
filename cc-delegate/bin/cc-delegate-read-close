@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# cc-delegate-read-close — read the sub-session's scrollback, then close the tab.
+# Usage: cc-delegate-read-close <ws_ref> <surface_ref>
+exec "$(dirname "$0")/../lib/cc-delegate-read-core" --mode read-close "$@"

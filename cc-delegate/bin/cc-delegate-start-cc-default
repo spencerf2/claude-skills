@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# cc-delegate-start-cc-default — open a new cmux tab and launch `cc-default`
+# (claude --permission-mode default; normal per-tool permission prompts, no
+# plan gate). Prompt is read from stdin.
+# Thin wrapper around lib/cc-delegate-start-core --mode cc-default.
+exec "$(dirname "$0")/../lib/cc-delegate-start-core" --mode cc-default "$@"

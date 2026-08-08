@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# cc-delegate-close — close the sub-session's tab without reading scrollback.
+# Use when you've already read the scrollback, or just need to tear down the tab.
+# Usage: cc-delegate-close <ws_ref> <surface_ref>
+exec "$(dirname "$0")/../lib/cc-delegate-read-core" --mode close "$@"

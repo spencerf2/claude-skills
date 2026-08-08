@@ -4,86 +4,73 @@ description: "Spawn a new cmux tab to either run a shell command directly (raw m
 argument-hint: "<prompt for sub cc session, or shell command for raw mode>"
 ---
 
-Spawn a sub Claude Code session in a new cmux surface (tab) via the user's `cc` alias, paste the user's prompt, hit Enter, then — on a later turn, when the user says the sub Claude Code session is done — read the scrollback, present the output, and offer to close the tab.
+Spawn a sub Claude Code session (or a raw shell command) in a new cmux surface (tab), paste the prompt, hit Enter. On a later turn — when the user reports completion — read the scrollback, present the output, offer to close the tab.
 
 The prompt text is the skill's invocation argument.
 
-Phase 1 and Phase 2 are each a single Bash call, wrapping cmux orchestration in the three scripts at `~/.claude/skills/cc-delegate/bin/`:
+## Key terms
 
-- `cc-delegate-start` — opens tab, launches cc, pastes prompt, hits Enter
-- `cc-delegate-read`  — reads scrollback; optional `--wait-for NONCE` poll and `--close`
-- `cc-delegate-send`  — pastes a follow-up prompt into an existing sub-session
+- **`cc`.** The user's shell alias for the Claude CLI.
+- **Scrollback.** The output history of the sub-session's tab — what the user would see by scrolling up in that tab. Read it via the `cc-delegate-read*` commands.
+- **Nonce.** A random marker string the `cc-delegate-start-cc*` scripts append to the prompt as an instruction: *"print this string on the final line when done."* Two uses:
+  - The user glances at the tab, sees the nonce, and tells you the sub-session is done.
+  - Or, when the user asks you to monitor, poll with `cc-delegate-read-wait*` — the nonce is the completion signal (must appear ≥2 times: once from the pasted prompt, once from the reply).
 
-## Phase 1 — Open tab, start the sub Claude Code session, paste prompt (run on skill invocation)
+  No nonce in raw mode.
 
-Run **one** Bash call. The prompt goes in via stdin heredoc so quoting, `$`, backticks, and newlines don't break:
+## Commands
+
+Scripts live in `~/.claude/skills/cc-delegate/bin/` (but you shouldn't need to read them — ask the user before doing so in the rare event you need to look at them).
+
+### Phase 1 — Start
+
+Pick one based on what the task needs:
+
+- **`cc-delegate-start-cc`** — launches `cc` (plan mode). Pick when the task requires research, file reading, or planning before execution.
+- **`cc-delegate-start-cc-default`** — launches `cc-default` (per-tool approval). Pick when the task is execution-ready or needs only minor upfront reading/planning.
+- **`cc-delegate-start-raw`** — paste a raw shell command (no sub-cc, no nonce). Fire-and-forget. Do not follow up with `cc-delegate-send`.
+
+Run **one** Bash call. Prompt goes in via stdin heredoc so quoting, `$`, backticks, and newlines survive:
 
 ```bash
-~/.claude/skills/cc-delegate/bin/cc-delegate-start [--cwd /path/to/dir] <<'CC_DELEGATE_PROMPT_EOF'
+~/.claude/skills/cc-delegate/bin/cc-delegate-start-cc [--cwd /path/to/dir] <<'CC_DELEGATE_PROMPT_EOF'
 <<<PASTE THE SKILL ARGUMENT HERE, VERBATIM>>>
 CC_DELEGATE_PROMPT_EOF
 ```
 
-The script:
-1. Sanity-checks cmux is running (fails loudly if not).
-2. Finds the currently-selected workspace.
-3. Creates a new surface (tab) in that workspace.
-4. Optionally `cd`s into `--cwd` if passed (with a 2-second settle).
-5. Launches `cc` and waits 3 seconds for the TUI.
-6. Generates a random nonce `CC_DELEGATE_DONE_<hex>` and appends instructions to the prompt: *"When you have finished answering, print exactly this string on its own final line: `<NONCE>`"*.
-7. Pastes the combined prompt and hits Enter (with `return` fallback).
-8. Prints three lines to stdout:
-   ```
-   ws_ref=workspace:N
-   surface_ref=surface:M
-   nonce=CC_DELEGATE_DONE_<hex>
-   ```
+On success, prints to stdout:
 
-**Capture all three values** from the Bash tool output — they're needed for Phase 2.
-
-**Report back to the user.** Include the refs (and mention the nonce exists) so the conversation context retains them. Example:
-
-> Pasted the prompt into a new cmux tab (`workspace: workspace:3`, `surface: surface:12`). Tell me when the sub Claude Code session finishes and I'll read the output.
-
-Do not poll by default. Stop and wait for the user's next message.
-
-For raw shell commands (no `cc`), pass `--raw` to `cc-delegate-start` — see the script header for details and caveats.
-
-## Phase 2 — Read output when user says the sub Claude Code session is done
-
-Triggered when the user reports completion ("it's done", "cc finished", "ok read the output"). Use the `ws_ref`, `surface_ref` from Phase 1.
-
-**Default (human-triggered read).** One Bash call:
-
-```bash
-~/.claude/skills/cc-delegate/bin/cc-delegate-read <ws_ref> <surface_ref>
+```
+ws_ref=workspace:N
+surface_ref=surface:M
+nonce=CC_DELEGATE_DONE_<hex>     (omitted by cc-delegate-start-raw)
 ```
 
-Extract the relevant section from the printed scrollback — typically the last assistant message. Skip TUI chrome (box-drawing, input box). If long, summarize rather than dumping the whole buffer.
+Capture the refs (and the nonce, if present) — needed for later phases. Report the refs back so the conversation retains them:
 
-**Asking about closing the tab.** Ask:
+> Pasted into a new cmux tab (`workspace:3`, `surface:12`). Tell me when the sub-session finishes and I'll read the output.
+
+Stop. Wait for the user's next message. Do not poll unless asked.
+
+### Phase 2 — Read / close
+
+Default path: the user reports completion and you read. Only use `cc-delegate-read-wait*` when explicitly asked to monitor. Pick one:
+
+- **`cc-delegate-read <ws_ref> <surface_ref>`** — read scrollback once, leave tab open. Use when a follow-up via `cc-delegate-send` is likely.
+- **`cc-delegate-read-close <ws_ref> <surface_ref>`** — read scrollback, then close the tab. Use when done with the sub-session.
+- **`cc-delegate-read-wait <ws_ref> <surface_ref> <nonce>`** — block until the nonce appears (polls every 5s, times out at ~9 min with exit 2), then read. Use only when the user asks you to monitor.
+- **`cc-delegate-read-wait-close <ws_ref> <surface_ref> <nonce>`** — block on nonce, read, then close. Use when asked to monitor *and* tear down when done.
+- **`cc-delegate-close <ws_ref> <surface_ref>`** — close without reading. Use when scrollback was already read in a prior turn, or when tearing down without caring about output.
+
+Don't echo the full buffer back — the user has usually already seen it, or asked you to monitor (which warrants a synthesis, not a replay). Summarize: highlight what matters, flag anything surprising or needing attention. Skip TUI chrome (borders, input box).
+
+Ask before closing (unless the user has already said to close it):
 
 > Close the tab?
 
-If yes, and you have **not yet read** the scrollback — one call does read + close together:
+### Phase 3 — Follow-up prompt (optional)
 
-```bash
-~/.claude/skills/cc-delegate/bin/cc-delegate-read <ws_ref> <surface_ref> --close
-```
-
-If yes, and you **already read** the scrollback — close directly without re-reading (avoids re-dumping a long scrollback into your context). Send Ctrl+C twice to gracefully exit cc before destroying the tab:
-
-```bash
-cmux send-key --workspace <ws_ref> --surface <surface_ref> ctrl+c
-sleep 1
-cmux send-key --workspace <ws_ref> --surface <surface_ref> ctrl+c
-sleep 1
-cmux close-surface --workspace <ws_ref> --surface <surface_ref>
-```
-
-## Phase 3 — Follow-up prompt (optional, on user request)
-
-If the user wants to push another prompt into the same sub-session:
+Push another prompt into the same sub-session:
 
 ```bash
 ~/.claude/skills/cc-delegate/bin/cc-delegate-send <ws_ref> <surface_ref> <<'CC_DELEGATE_PROMPT_EOF'
@@ -91,21 +78,12 @@ If the user wants to push another prompt into the same sub-session:
 CC_DELEGATE_PROMPT_EOF
 ```
 
-Prints a new `nonce=...` on stdout. Wait for the user to say it's done, then use Phase 2 to read.
+Prints a new `nonce=...`. Wait for the user to report completion, then use Phase 2 to read.
 
-## Opt-in: wait-for-completion mode
+## Polling caveat
 
-Only use this when the user explicitly asks you to block until the sub-session finishes (e.g. "kick it off and wait for it"). Default is human-in-the-loop.
-
-```bash
-~/.claude/skills/cc-delegate/bin/cc-delegate-read <ws_ref> <surface_ref> --wait-for <nonce>
-```
-
-Polls every 5 seconds for the nonce to appear ≥2 times in the scrollback (once from the pasted prompt, once from sub-cc's reply). Times out at ~9 minutes (just under the Bash tool's 10-min cap) with exit code 2 and prints whatever scrollback exists so far. **Prefer foreground Bash for this** — `run_in_background: true` could surprise-interrupt the user if the nonce fires while they're mid-conversation with you.
+Prefer foreground Bash when running `cc-delegate-read-wait*` — `run_in_background: true` could surprise-interrupt the user if the nonce fires mid-conversation.
 
 ## Known limitations
 
-- **Permission prompts in the sub-session** (y/n dialogs) will hang it forever; the nonce never prints. If using `--wait-for`, expect the 9-minute timeout. Default human-in-the-loop mode avoids this — the user can jump into the tab and answer the prompt themselves.
-- **Embedded newlines in a pasted prompt** may submit prematurely if `cmux send` doesn't trigger the TUI's bracketed-paste handling. If this breaks a specific prompt, the workaround is the same as before: strip/replace `\n` before piping in, or split into multiple `cc-delegate-send` calls.
-- **Refs live only in this conversation's context.** If the conversation is compacted aggressively, Phase 2 may lose them — re-derive from `cmux list-workspaces` / `cmux list-pane-surfaces` if needed, or ask the user.
-- **Now script-handled** (previously fragile or manual): sanity check that cmux is up, parsing workspace/surface refs from cmux output, quoting of prompts with `$` / backticks / quotes (stdin), Enter → Return fallback.
+- **Permission prompts in the sub-session** (y/n dialogs under `cc-delegate-start-cc-default`) require the user to answer in the tab. If polling, the nonce won't print until the prompt is cleared — expect the timeout unless the user jumps in.

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# cc-delegate-start-cc — open a new cmux tab and launch `cc` (claude; honors
+# settings.json defaultMode, currently `plan`). Prompt is read from stdin.
+# Thin wrapper around lib/cc-delegate-start-core --mode cc.
+exec "$(dirname "$0")/../lib/cc-delegate-start-core" --mode cc "$@"

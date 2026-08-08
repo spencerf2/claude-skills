@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# cc-delegate-start-raw — open a new cmux tab and paste a raw shell command
+# (no `cc`, no completion nonce). Fire-and-forget. Prompt is read from stdin.
+# Do not follow up with cc-delegate-send.
+# Thin wrapper around lib/cc-delegate-start-core --mode raw.
+exec "$(dirname "$0")/../lib/cc-delegate-start-core" --mode raw "$@"

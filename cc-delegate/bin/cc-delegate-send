@@ -1,17 +1,52 @@
 #!/usr/bin/env bash
 # cc-delegate-send — paste a follow-up prompt into an existing cc-delegate sub-session.
-# Usage: cc-delegate-send <ws_ref> <surface_ref>
+# Usage: cc-delegate-send [--no-nonce] [--shell] <ws_ref> <surface_ref>
 # Prompt is read from stdin.
 #
-# On success, prints to stdout:
+# On success (without --no-nonce), prints to stdout:
 #   nonce=CC_DELEGATE_DONE_<rand>
 # The nonce is appended to the prompt as a completion sentinel; use it with
-# `cc-delegate-read --wait-for $nonce` if you want to block on completion.
+# `cc-delegate-read-wait` if you want to block on completion.
+#
+# With --no-nonce: stdin is pasted verbatim, no sentinel appended, no nonce
+# printed.
+#
+# With --shell: the target surface is a shell prompt, not a Claude Code
+# session — wrap the text in bracketed-paste markers so zsh inserts it
+# without running each line at \n. Never use against a Claude Code session
+# (the TUI types the markers literally). cc-delegate-start-raw uses
+# --no-nonce --shell.
 
 set -euo pipefail
 
+NONCE_MODE=1
+SHELL_MODE=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --no-nonce)
+            NONCE_MODE=0
+            shift
+            ;;
+        --shell)
+            SHELL_MODE=1
+            shift
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            echo "ERROR: unknown flag: $1" >&2
+            exit 1
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
 if [ $# -ne 2 ]; then
-    echo "Usage: cc-delegate-send <ws_ref> <surface_ref>" >&2
+    echo "Usage: cc-delegate-send [--no-nonce] [--shell] <ws_ref> <surface_ref>" >&2
     echo "(prompt is read from stdin)" >&2
     exit 1
 fi
@@ -19,14 +54,42 @@ fi
 WS_REF="$1"
 SURFACE_REF="$2"
 
-NONCE="CC_DELEGATE_DONE_$(openssl rand -hex 6)"
-
 PROMPT=$(cat)
-PROMPT="${PROMPT}
+
+if [ "$NONCE_MODE" -eq 1 ]; then
+    NONCE="CC_DELEGATE_DONE_$(openssl rand -hex 6)"
+    PROMPT="${PROMPT}
 
 When you have finished answering, print exactly this string on its own final line (nothing else on that line): ${NONCE}"
+fi
 
-cmux send --workspace "$WS_REF" --surface "$SURFACE_REF" -- "$PROMPT" >/dev/null
+# Send via the raw RPC layer, not `cmux send`: the CLI converts \n/\r/\t
+# (both literal backslash sequences and real newlines) into keypresses, which
+# submits multiline prompts early and mangles prompt content.
+# surface.send_text delivers bytes verbatim.
+#
+# Delivery depends on the target:
+# - Claude Code session (default): verbatim. The input box treats a raw \n as
+#   insert-newline (Ctrl+J), so multiline prompts land as one message.
+#   Do NOT add bracketed-paste markers — the TUI reads their ESC bytes as the
+#   Escape key (opens the Rewind dialog) and types the markers literally.
+# - shell prompt (--shell): zsh runs each line at \n, so wrap in
+#   bracketed-paste markers, which zsh honors (inserts without executing);
+#   the trailing Enter then runs the whole block.
+TEXT="$PROMPT"
+if [ "$SHELL_MODE" -eq 1 ]; then
+    ESC=$'\x1b'
+    TEXT="${ESC}[200~${TEXT}${ESC}[201~"
+fi
+PARAMS=$(jq -n \
+    --arg text "$TEXT" \
+    --arg ws "$WS_REF" \
+    --arg sf "$SURFACE_REF" \
+    '{text: $text, workspace_id: $ws, surface_id: $sf}')
+cmux rpc surface.send_text "$PARAMS" >/dev/null
+
+# Give the TUI a beat to register the bracketed paste before we fire Enter.
+sleep 1
 
 if ! cmux send-key --workspace "$WS_REF" --surface "$SURFACE_REF" enter >/dev/null 2>&1; then
     if ! cmux send-key --workspace "$WS_REF" --surface "$SURFACE_REF" return >/dev/null 2>&1; then
@@ -35,4 +98,6 @@ if ! cmux send-key --workspace "$WS_REF" --surface "$SURFACE_REF" enter >/dev/nu
     fi
 fi
 
-echo "nonce=$NONCE"
+if [ "$NONCE_MODE" -eq 1 ]; then
+    echo "nonce=$NONCE"
+fi

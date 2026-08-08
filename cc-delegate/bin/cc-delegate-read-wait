@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# cc-delegate-read-wait — poll until nonce appears in scrollback, then read.
+# Usage: cc-delegate-read-wait <ws_ref> <surface_ref> <nonce>
+# Polls every 5s for the nonce to appear >=2 times. Times out after ~9 min.
+exec "$(dirname "$0")/../lib/cc-delegate-read-core" --mode read-wait "$@"

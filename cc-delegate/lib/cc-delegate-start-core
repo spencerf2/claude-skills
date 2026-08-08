@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# cc-delegate-start-core — shared implementation for the cc-delegate-start-* wrappers.
+# Do not invoke directly from SKILL.md; use the bin/cc-delegate-start-* wrappers instead.
+#
+# Usage: cc-delegate-start-core --mode {cc|cc-default|raw} [--cwd DIR]
+# Prompt is read from stdin.
+#
+# Modes:
+#   cc          Launch the `cc` alias (claude, honors settings.json defaultMode — currently `plan`).
+#               Appends a completion-sentinel nonce to the prompt.
+#   cc-default  Launch the `cc-default` alias (claude --permission-mode default).
+#               Appends a completion-sentinel nonce to the prompt.
+#   raw         Skip the cc launch entirely. Stdin is pasted verbatim into a fresh
+#               shell prompt and Enter is hit — fire-and-forget shell command.
+#               No nonce. Do not follow up with cc-delegate-send.
+#
+# On success, prints to stdout:
+#   ws_ref=workspace:N
+#   surface_ref=surface:M
+#   nonce=CC_DELEGATE_DONE_<rand>   (omitted in raw mode)
+
+set -euo pipefail
+
+CWD=""
+MODE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --cwd)
+            if [ $# -lt 2 ]; then
+                echo "ERROR: --cwd requires a directory argument" >&2
+                exit 1
+            fi
+            CWD="$2"
+            shift 2
+            ;;
+        --mode)
+            if [ $# -lt 2 ]; then
+                echo "ERROR: --mode requires a value (cc|cc-default|raw)" >&2
+                exit 1
+            fi
+            MODE="$2"
+            shift 2
+            ;;
+        --help|-h)
+            sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0
+            ;;
+        *)
+            echo "ERROR: unknown argument: $1" >&2
+            exit 1
+            ;;
+    esac
+done
+
+case "$MODE" in
+    cc|cc-default|raw) ;;
+    "") echo "ERROR: --mode is required (cc|cc-default|raw)" >&2; exit 1 ;;
+    *)  echo "ERROR: invalid --mode: $MODE (expected cc|cc-default|raw)" >&2; exit 1 ;;
+esac
+
+if ! cmux list-workspaces >/dev/null 2>&1; then
+    echo "ERROR: cmux is not running (cmux list-workspaces failed)" >&2
+    exit 1
+fi
+
+ws_ref=$(cmux list-workspaces | awk '/\[selected\]/ {print $2; exit}')
+if [ -z "${ws_ref:-}" ]; then
+    echo "ERROR: could not find selected workspace in cmux list-workspaces output" >&2
+    exit 1
+fi
+
+surface_output=$(cmux new-surface --workspace "$ws_ref")
+surface_ref=$(printf '%s\n' "$surface_output" | awk '{for (i=1; i<=NF; i++) if ($i ~ /^surface:/) { print $i; exit }}')
+if [ -z "${surface_ref:-}" ]; then
+    echo "ERROR: could not parse surface ref from: $surface_output" >&2
+    exit 1
+fi
+
+if [ -n "$CWD" ]; then
+    cmux send --workspace "$ws_ref" --surface "$surface_ref" -- "cd ${CWD}"'\n' >/dev/null
+    sleep 2
+fi
+
+case "$MODE" in
+    cc)
+        cmux send --workspace "$ws_ref" --surface "$surface_ref" -- 'cc\n' >/dev/null
+        sleep 6
+        ;;
+    cc-default)
+        cmux send --workspace "$ws_ref" --surface "$surface_ref" -- 'cc-default\n' >/dev/null
+        sleep 6
+        ;;
+    raw)
+        ;;
+esac
+
+SEND="$(dirname "$0")/../bin/cc-delegate-send"
+
+echo "ws_ref=$ws_ref"
+echo "surface_ref=$surface_ref"
+
+if [ "$MODE" = "raw" ]; then
+    "$SEND" --no-nonce --shell "$ws_ref" "$surface_ref"
+else
+    "$SEND" "$ws_ref" "$surface_ref"
+fi
