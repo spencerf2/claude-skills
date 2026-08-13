@@ -11,6 +11,11 @@
 # With --no-nonce: stdin is pasted verbatim, no sentinel appended, no nonce
 # printed.
 #
+# Safety net: even without --no-nonce, a single-line prompt shaped like a
+# slash command (e.g. `/model Fable`) skips the nonce automatically, with a
+# notice on stderr — the appended sentinel would silently stop Claude Code
+# treating the paste as a command.
+#
 # With --shell: the target surface is a shell prompt, not a Claude Code
 # session — wrap the text in bracketed-paste markers so zsh inserts it
 # without running each line at \n. Never use against a Claude Code session
@@ -55,6 +60,17 @@ WS_REF="$1"
 SURFACE_REF="$2"
 
 PROMPT=$(cat)
+
+# Slash-command safety net: skip the nonce rather than silently break the
+# command. Shape test: single line, first token starting with `/` and no
+# second `/` in it — paths like /Users/... don't match.
+SLASH_CMD_RE='^/[A-Za-z0-9][A-Za-z0-9_:-]*([[:space:]].*)?$'
+if [ "$NONCE_MODE" -eq 1 ] \
+    && [[ "$PROMPT" != *$'\n'* ]] \
+    && [[ "$PROMPT" =~ $SLASH_CMD_RE ]]; then
+    NONCE_MODE=0
+    echo "NOTE: slash-command prompt detected; nonce skipped — no completion signal for this submission" >&2
+fi
 
 if [ "$NONCE_MODE" -eq 1 ]; then
     NONCE="CC_DELEGATE_DONE_$(openssl rand -hex 6)"

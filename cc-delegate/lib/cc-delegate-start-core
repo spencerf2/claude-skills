@@ -2,7 +2,7 @@
 # cc-delegate-start-core — shared implementation for the cc-delegate-start-* wrappers.
 # Do not invoke directly from SKILL.md; use the bin/cc-delegate-start-* wrappers instead.
 #
-# Usage: cc-delegate-start-core --mode {cc|cc-default|raw} [--cwd DIR]
+# Usage: cc-delegate-start-core --mode {cc|cc-default|raw} [--cwd DIR] [--no-nonce]
 # Prompt is read from stdin.
 #
 # Modes:
@@ -14,17 +14,27 @@
 #               shell prompt and Enter is hit — fire-and-forget shell command.
 #               No nonce. Do not follow up with cc-delegate-send.
 #
+# --no-nonce (cc/cc-default): paste and submit the prompt verbatim — no
+# sentinel appended, no nonce= line printed. Needed for slash-command
+# prompts, which the appended sentinel would stop being treated as commands.
+# No-op in raw mode (already nonce-free).
+#
 # On success, prints to stdout:
 #   ws_ref=workspace:N
 #   surface_ref=surface:M
-#   nonce=CC_DELEGATE_DONE_<rand>   (omitted in raw mode)
+#   nonce=CC_DELEGATE_DONE_<rand>   (omitted in raw mode and with --no-nonce)
 
 set -euo pipefail
 
 CWD=""
 MODE=""
+NONCE_MODE=1
 while [ $# -gt 0 ]; do
     case "$1" in
+        --no-nonce)
+            NONCE_MODE=0
+            shift
+            ;;
         --cwd)
             if [ $# -lt 2 ]; then
                 echo "ERROR: --cwd requires a directory argument" >&2
@@ -42,7 +52,7 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         --help|-h)
-            sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -101,6 +111,8 @@ echo "surface_ref=$surface_ref"
 
 if [ "$MODE" = "raw" ]; then
     "$SEND" --no-nonce --shell "$ws_ref" "$surface_ref"
+elif [ "$NONCE_MODE" -eq 0 ]; then
+    "$SEND" --no-nonce "$ws_ref" "$surface_ref"
 else
     "$SEND" "$ws_ref" "$surface_ref"
 fi

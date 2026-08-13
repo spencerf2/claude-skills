@@ -16,7 +16,7 @@ The prompt text is the skill's invocation argument.
   - The user glances at the tab, sees the nonce, and tells you the sub-session is done.
   - Or, when the user asks you to monitor, poll with `cc-delegate-read-wait*` — the nonce is the completion signal (must appear ≥2 times: once from the pasted prompt, once from the reply).
 
-  No nonce in raw mode.
+  No nonce in raw mode or with `--no-nonce`.
 
 ## Commands
 
@@ -33,7 +33,7 @@ Pick one based on what the task needs:
 Run **one** Bash call. Prompt goes in via stdin heredoc so quoting, `$`, backticks, and newlines survive:
 
 ```bash
-~/.claude/skills/cc-delegate/bin/cc-delegate-start-cc [--cwd /path/to/dir] <<'CC_DELEGATE_PROMPT_EOF'
+~/.claude/skills/cc-delegate/bin/cc-delegate-start-cc [--cwd /path/to/dir] [--no-nonce] <<'CC_DELEGATE_PROMPT_EOF'
 <<<PASTE THE SKILL ARGUMENT HERE, VERBATIM>>>
 CC_DELEGATE_PROMPT_EOF
 ```
@@ -43,7 +43,7 @@ On success, prints to stdout:
 ```
 ws_ref=workspace:N
 surface_ref=surface:M
-nonce=CC_DELEGATE_DONE_<hex>     (omitted by cc-delegate-start-raw)
+nonce=CC_DELEGATE_DONE_<hex>     (omitted by cc-delegate-start-raw and with --no-nonce)
 ```
 
 Capture the refs (and the nonce, if present) — needed for later phases. Report the refs back so the conversation retains them:
@@ -51,6 +51,8 @@ Capture the refs (and the nonce, if present) — needed for later phases. Report
 > Pasted into a new cmux tab (`workspace:3`, `surface:12`). Tell me when the sub-session finishes and I'll read the output.
 
 Stop. Wait for the user's next message. Do not poll unless asked.
+
+**`--no-nonce`** (all start commands and `cc-delegate-send`) — pass it when the prompt is a slash command (e.g. `/model Fable`); the appended nonce would stop it being a command. The prompt is pasted and submitted verbatim and no `nonce=` line prints — no completion signal, so `cc-delegate-read-wait*` won't work for that submission.
 
 ### Phase 2 — Read / close
 
@@ -78,7 +80,7 @@ Push another prompt into the same sub-session:
 CC_DELEGATE_PROMPT_EOF
 ```
 
-Prints a new `nonce=...`. Wait for the user to report completion, then use Phase 2 to read.
+Prints a new `nonce=...` (unless `--no-nonce`). Wait for the user to report completion, then use Phase 2 to read.
 
 ## Polling caveat
 
