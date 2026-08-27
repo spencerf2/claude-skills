@@ -10,7 +10,7 @@ The prompt text is the skill's invocation argument.
 
 ## Key terms
 
-- **`cc`.** The user's shell alias for the Claude CLI.
+- **`cc`.** Short for Claude Code in the command names below.
 - **Scrollback.** The output history of the sub-session's tab — what the user would see by scrolling up in that tab. Read it via the `cc-delegate-read*` commands.
 - **Nonce.** A random marker string the `cc-delegate-start-cc*` scripts append to the prompt as an instruction: *"print this string on the final line when done."* Two uses:
   - The user glances at the tab, sees the nonce, and tells you the sub-session is done.
@@ -26,14 +26,14 @@ Scripts live in `~/.claude/skills/cc-delegate/bin/` (but you shouldn't need to r
 
 Pick one based on what the task needs:
 
-- **`cc-delegate-start-cc`** — launches `cc` (plan mode). Pick when the task requires research, file reading, or planning before execution.
-- **`cc-delegate-start-cc-default`** — launches `cc-default` (per-tool approval). Pick when the task is execution-ready or needs only minor upfront reading/planning.
+- **`cc-delegate-start-cc`** — launches `claude` (per-tool approval). Pick when the task is execution-ready or needs only minor upfront reading/planning.
+- **`cc-delegate-start-cc-plan`** — launches `claude --permission-mode plan`. Pick when the task requires research, file reading, or planning before execution.
 - **`cc-delegate-start-raw`** — paste a raw shell command (no sub-cc, no nonce). Fire-and-forget. Do not follow up with `cc-delegate-send`.
 
 Run **one** Bash call. Prompt goes in via stdin heredoc so quoting, `$`, backticks, and newlines survive:
 
 ```bash
-~/.claude/skills/cc-delegate/bin/cc-delegate-start-cc [--cwd /path/to/dir] [--no-nonce] <<'CC_DELEGATE_PROMPT_EOF'
+~/.claude/skills/cc-delegate/bin/cc-delegate-start-cc [--cwd /path/to/dir] [--no-nonce] [--workspace <ref|id>] [--model <name>] <<'CC_DELEGATE_PROMPT_EOF'
 <<<PASTE THE SKILL ARGUMENT HERE, VERBATIM>>>
 CC_DELEGATE_PROMPT_EOF
 ```
@@ -53,6 +53,10 @@ Capture the refs (and the nonce, if present) — needed for later phases. Report
 Stop. Wait for the user's next message. Do not poll unless asked.
 
 **`--no-nonce`** (all start commands and `cc-delegate-send`) — pass it when the prompt is a slash command (e.g. `/model Fable`); the appended nonce would stop it being a command. The prompt is pasted and submitted verbatim and no `nonce=` line prints — no completion signal, so `cc-delegate-read-wait*` won't work for that submission.
+
+**`--workspace <ref|id>`** (all start commands) — open the tab in that workspace (`workspace:N`, or the UUID from `cmux workspace list --json`). Default is the calling session's own workspace (`$CMUX_WORKSPACE_ID`), falling back to the one selected in the cmux UI only when that's unset or unknown to cmux — so tabs land where the caller is, not wherever happens to be selected.
+
+**`--model <name>`** (`cc-delegate-start-cc` and `cc-delegate-start-cc-plan`) — pass a model to the spawned `claude` (e.g. `--model opus`). Errors under `cc-delegate-start-raw`, which doesn't launch Claude.
 
 ### Phase 2 — Read / close
 
@@ -88,4 +92,6 @@ Prefer foreground Bash when running `cc-delegate-read-wait*` — `run_in_backgro
 
 ## Known limitations
 
-- **Permission prompts in the sub-session** (y/n dialogs under `cc-delegate-start-cc-default`) require the user to answer in the tab. If polling, the nonce won't print until the prompt is cleared — expect the timeout unless the user jumps in.
+- **Permission prompts in the sub-session** (y/n dialogs under `cc-delegate-start-cc`) require the user to answer in the tab. If polling, the nonce won't print until the prompt is cleared — expect the timeout unless the user jumps in.
+- **Sends are paced.** The prompt goes in line by line, waiting for the tab to redraw after each send (~2 s per KB), because cmux delivers newlines as Enter keystrokes and the pty drops input when the target is busy. If a send fails with "target did not redraw", the sub-session is stalled or showing a dialog — look at the tab; the partial text sits in its input box, unsubmitted.
+- **Tabs become four spaces** in prompts to Claude Code (it drops a Tab keystroke). Raw mode keeps tabs.

@@ -2,22 +2,31 @@
 # cc-delegate-start-core — shared implementation for the cc-delegate-start-* wrappers.
 # Do not invoke directly from SKILL.md; use the bin/cc-delegate-start-* wrappers instead.
 #
-# Usage: cc-delegate-start-core --mode {cc|cc-default|raw} [--cwd DIR] [--no-nonce]
+# Usage: cc-delegate-start-core --mode {cc|cc-plan|raw} [--cwd DIR] [--no-nonce]
+#                               [--workspace REF|ID] [--model NAME]
 # Prompt is read from stdin.
 #
 # Modes:
-#   cc          Launch the `cc` alias (claude, honors settings.json defaultMode — currently `plan`).
+#   cc          Launch `claude`.
 #               Appends a completion-sentinel nonce to the prompt.
-#   cc-default  Launch the `cc-default` alias (claude --permission-mode default).
+#   cc-plan     Launch `claude --permission-mode plan`.
 #               Appends a completion-sentinel nonce to the prompt.
 #   raw         Skip the cc launch entirely. Stdin is pasted verbatim into a fresh
 #               shell prompt and Enter is hit — fire-and-forget shell command.
 #               No nonce. Do not follow up with cc-delegate-send.
 #
-# --no-nonce (cc/cc-default): paste and submit the prompt verbatim — no
+# --no-nonce (cc/cc-plan): paste and submit the prompt verbatim — no
 # sentinel appended, no nonce= line printed. Needed for slash-command
 # prompts, which the appended sentinel would stop being treated as commands.
 # No-op in raw mode (already nonce-free).
+#
+# --workspace REF|ID: open the tab in this workspace (workspace:N, or the
+# UUID from `cmux workspace list --json`). Default: the caller's own
+# workspace ($CMUX_WORKSPACE_ID); if that is unset or unknown to cmux, the
+# workspace selected in the cmux UI.
+#
+# --model NAME (cc/cc-plan): append `--model NAME` to the launched command.
+# Error in raw mode — nothing launches claude there, so it can't take effect.
 #
 # On success, prints to stdout:
 #   ws_ref=workspace:N
@@ -28,6 +37,8 @@ set -euo pipefail
 
 CWD=""
 MODE=""
+MODEL=""
+WORKSPACE=""
 NONCE_MODE=1
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -45,14 +56,30 @@ while [ $# -gt 0 ]; do
             ;;
         --mode)
             if [ $# -lt 2 ]; then
-                echo "ERROR: --mode requires a value (cc|cc-default|raw)" >&2
+                echo "ERROR: --mode requires a value (cc|cc-plan|raw)" >&2
                 exit 1
             fi
             MODE="$2"
             shift 2
             ;;
+        --workspace)
+            if [ $# -lt 2 ]; then
+                echo "ERROR: --workspace requires a workspace ref or id" >&2
+                exit 1
+            fi
+            WORKSPACE="$2"
+            shift 2
+            ;;
+        --model)
+            if [ $# -lt 2 ]; then
+                echo "ERROR: --model requires a model name" >&2
+                exit 1
+            fi
+            MODEL="$2"
+            shift 2
+            ;;
         --help|-h)
-            sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -63,17 +90,37 @@ while [ $# -gt 0 ]; do
 done
 
 case "$MODE" in
-    cc|cc-default|raw) ;;
-    "") echo "ERROR: --mode is required (cc|cc-default|raw)" >&2; exit 1 ;;
-    *)  echo "ERROR: invalid --mode: $MODE (expected cc|cc-default|raw)" >&2; exit 1 ;;
+    cc|cc-plan|raw) ;;
+    "") echo "ERROR: --mode is required (cc|cc-plan|raw)" >&2; exit 1 ;;
+    *)  echo "ERROR: invalid --mode: $MODE (expected cc|cc-plan|raw)" >&2; exit 1 ;;
 esac
+
+if [ "$MODE" = "raw" ] && [ -n "$MODEL" ]; then
+    echo "ERROR: --model has no effect in raw mode (nothing launches claude)" >&2
+    exit 1
+fi
 
 if ! cmux list-workspaces >/dev/null 2>&1; then
     echo "ERROR: cmux is not running (cmux list-workspaces failed)" >&2
     exit 1
 fi
 
-ws_ref=$(cmux list-workspaces | awk '/\[selected\]/ {print $2; exit}')
+# An explicit --workspace that matches nothing is an error; an unknown
+# $CMUX_WORKSPACE_ID (e.g. inherited from a workspace that has since closed)
+# just falls through to the selected workspace.
+ws_ref=""
+ws_query="${WORKSPACE:-${CMUX_WORKSPACE_ID:-}}"
+if [ -n "$ws_query" ]; then
+    ws_ref=$(CMUX_QUIET=1 cmux workspace list --json \
+        | jq -r --arg q "$ws_query" 'first(.workspaces[] | select(.id == $q or .ref == $q) | .ref)')
+fi
+if [ -n "$WORKSPACE" ] && [ -z "$ws_ref" ]; then
+    echo "ERROR: --workspace $WORKSPACE matched no workspace ref or id in cmux workspace list --json" >&2
+    exit 1
+fi
+if [ -z "$ws_ref" ]; then
+    ws_ref=$(cmux list-workspaces | awk '/\[selected\]/ {print $2; exit}')
+fi
 if [ -z "${ws_ref:-}" ]; then
     echo "ERROR: could not find selected workspace in cmux list-workspaces output" >&2
     exit 1
@@ -91,13 +138,20 @@ if [ -n "$CWD" ]; then
     sleep 2
 fi
 
+# Single-quoted in the spawned shell: a name like opus[1m] would otherwise
+# be globbed by zsh.
+MODEL_ARG=""
+if [ -n "$MODEL" ]; then
+    MODEL_ARG=" --model '${MODEL}'"
+fi
+
 case "$MODE" in
     cc)
-        cmux send --workspace "$ws_ref" --surface "$surface_ref" -- 'cc\n' >/dev/null
+        cmux send --workspace "$ws_ref" --surface "$surface_ref" -- "claude${MODEL_ARG}"'\n' >/dev/null
         sleep 6
         ;;
-    cc-default)
-        cmux send --workspace "$ws_ref" --surface "$surface_ref" -- 'cc-default\n' >/dev/null
+    cc-plan)
+        cmux send --workspace "$ws_ref" --surface "$surface_ref" -- "claude --permission-mode plan${MODEL_ARG}"'\n' >/dev/null
         sleep 6
         ;;
     raw)

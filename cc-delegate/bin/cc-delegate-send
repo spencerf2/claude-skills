@@ -17,10 +17,28 @@
 # treating the paste as a command.
 #
 # With --shell: the target surface is a shell prompt, not a Claude Code
-# session — wrap the text in bracketed-paste markers so zsh inserts it
-# without running each line at \n. Never use against a Claude Code session
-# (the TUI types the markers literally). cc-delegate-start-raw uses
-# --no-nonce --shell.
+# session — each text piece is wrapped in bracketed-paste markers so zsh
+# inserts it verbatim instead of interpreting it. Never use against a Claude
+# Code session (the TUI types the markers literally). cc-delegate-start-raw
+# uses --no-nonce --shell.
+#
+# Delivery, and why it is not one send_text call:
+# - cmux's surface.send_text turns every \n (and \r) into a separate Enter
+#   keystroke: it writes the text between newlines to the pty, then a lone \r.
+#   Claude Code reads a lone \r as Enter, so a multi-line prompt lands as one
+#   message only when the target reads slowly enough for the \r to merge into
+#   a burst with text around it — otherwise it submits piecewise, or the
+#   newline is dropped.
+# - Ghostty writes to the pty in 64-byte pieces and ignores short writes. The
+#   pty input queue holds about 1 KB; while the target is not reading (Claude
+#   Code mid-render), everything past that is dropped silently.
+# So newlines never go through send_text: each line's text goes out in pieces
+# of at most 512 bytes, and each newline as an alt+enter key event, which
+# Ghostty writes atomically as ESC CR and Claude Code (and zsh) insert as a
+# newline. After every send the script waits for the target to redraw before
+# sending more — a redraw means the bytes were read, so at most one piece is
+# ever queued in the pty. If the target stops redrawing, this fails loudly
+# instead of truncating.
 
 set -euo pipefail
 
@@ -79,32 +97,130 @@ if [ "$NONCE_MODE" -eq 1 ]; then
 When you have finished answering, print exactly this string on its own final line (nothing else on that line): ${NONCE}"
 fi
 
-# Send via the raw RPC layer, not `cmux send`: the CLI converts \n/\r/\t
-# (both literal backslash sequences and real newlines) into keypresses, which
-# submits multiline prompts early and mangles prompt content.
-# surface.send_text delivers bytes verbatim.
-#
-# Delivery depends on the target:
-# - Claude Code session (default): verbatim. The input box treats a raw \n as
-#   insert-newline (Ctrl+J), so multiline prompts land as one message.
-#   Do NOT add bracketed-paste markers — the TUI reads their ESC bytes as the
-#   Escape key (opens the Rewind dialog) and types the markers literally.
-# - shell prompt (--shell): zsh runs each line at \n, so wrap in
-#   bracketed-paste markers, which zsh honors (inserts without executing);
-#   the trailing Enter then runs the whole block.
-TEXT="$PROMPT"
-if [ "$SHELL_MODE" -eq 1 ]; then
-    ESC=$'\x1b'
-    TEXT="${ESC}[200~${TEXT}${ESC}[201~"
+# LC_ALL=C makes ${#..} and ${..:i:n} count bytes; piece sizes and cuts
+# below are in bytes.
+export LC_ALL=C
+# send_text writes \r as an Enter keystroke; dropping it costs CRLF prompts
+# nothing.
+TEXT=${PROMPT//$'\r'/}
+# send_text writes \t as a Tab keystroke, which Claude Code drops (no key
+# inserts a literal tab). zsh keeps it inside a bracketed paste, so --shell
+# leaves tabs alone.
+if [ "$SHELL_MODE" -eq 0 ] && [[ "$TEXT" == *$'\t'* ]]; then
+    TEXT=${TEXT//$'\t'/    }
+    echo "NOTE: tabs in the prompt were replaced with four spaces (Claude Code drops a Tab keystroke)" >&2
 fi
-PARAMS=$(jq -n \
-    --arg text "$TEXT" \
-    --arg ws "$WS_REF" \
-    --arg sf "$SURFACE_REF" \
-    '{text: $text, workspace_id: $ws, surface_id: $sf}')
-cmux rpc surface.send_text "$PARAMS" >/dev/null
 
-# Give the TUI a beat to register the bracketed paste before we fire Enter.
+PIECE_MAX=512      # comfortably under the ~1 KB pty input queue
+SETTLE_TIMEOUT=10  # seconds
+
+B=0
+# Sets B to the byte value of LINE at offset $1, 0 when $1 is past the end.
+byte_at() {
+    local c=${LINE:$1:1}
+    if [ -z "$c" ]; then
+        B=0
+        return
+    fi
+    printf -v B '%d' "'$c"
+    if (( B < 0 )); then B=$((B + 256)); fi
+}
+
+# A cut at offset $1 is safe when it sits between two non-whitespace bytes
+# and not inside a UTF-8 sequence, so a piece is inserted verbatim wherever
+# the target's reads split it.
+safe_cut() {
+    local a b
+    byte_at $(($1 - 1)); a=$B
+    byte_at "$1"; b=$B
+    (( a > 32 && b > 32 && (b < 128 || b > 191) ))
+}
+
+# Lines, with long lines cut into pieces. An empty entry stands for a newline.
+items=()
+rest="$TEXT"
+while :; do
+    if [[ "$rest" == *$'\n'* ]]; then
+        LINE=${rest%%$'\n'*}
+        rest=${rest#*$'\n'}
+        has_more=1
+    else
+        LINE="$rest"
+        has_more=0
+    fi
+    p=0
+    n=${#LINE}
+    while (( p < n )); do
+        end=$((p + PIECE_MAX))
+        if (( end > n )); then end=$n; fi
+        # Back up to the nearest safe cut; if there is none (a whitespace run
+        # longer than a piece), keep the cut as is.
+        if (( end < n )); then
+            e=$end
+            while (( e > p )) && ! safe_cut "$e"; do e=$((e - 1)); done
+            if (( e > p )); then end=$e; fi
+        fi
+        items+=("${LINE:p:end-p}")
+        p=$end
+    done
+    if [ "$has_more" -eq 0 ]; then break; fi
+    items+=("")
+done
+
+# The raw RPC, not `cmux send`: the CLI also turns literal backslash
+# sequences (\n, \t) in the text into keypresses.
+send_text() {
+    local params
+    params=$(jq -n \
+        --arg text "$1" \
+        --arg ws "$WS_REF" \
+        --arg sf "$SURFACE_REF" \
+        '{text: $text, workspace_id: $ws, surface_id: $sf}')
+    cmux rpc surface.send_text "$params" >/dev/null
+}
+
+screen() {
+    cmux read-screen --workspace "$WS_REF" --surface "$SURFACE_REF" 2>/dev/null || true
+}
+
+# Claude Code session (default): bare pieces. Do NOT add bracketed-paste
+# markers — the TUI reads their ESC bytes as the Escape key and types the
+# markers literally.
+# Shell prompt (--shell): every piece wrapped in bracketed-paste markers so
+# zsh inserts it without interpreting it; the trailing Enter runs the block.
+ESC=$'\x1b'
+total=${#items[@]}
+before=$(screen)
+for (( i = 0; i < total; i++ )); do
+    item=${items[i]}
+    if [ -z "$item" ]; then
+        cmux send-key --workspace "$WS_REF" --surface "$SURFACE_REF" alt+enter >/dev/null
+    else
+        if [ "$SHELL_MODE" -eq 1 ]; then
+            item="${ESC}[200~${item}${ESC}[201~"
+        fi
+        send_text "$item"
+    fi
+    settled=0
+    deadline=$((SECONDS + SETTLE_TIMEOUT))
+    while (( SECONDS < deadline )); do
+        after=$(screen)
+        if [ "$after" != "$before" ]; then
+            settled=1
+            before=$after
+            break
+        fi
+        sleep 0.03
+    done
+    if [ "$settled" -eq 0 ]; then
+        echo "ERROR: target did not redraw within ${SETTLE_TIMEOUT}s after send $((i + 1))/${total} — stalled, or showing a dialog. The partial prompt sits in its input box, unsubmitted." >&2
+        exit 1
+    fi
+done
+
+# Margin between the last redraw and Enter, so the return cannot land in the
+# same input tick as a paste (Claude Code defers such a return and replays it
+# later, at an unpredictable point).
 sleep 1
 
 if ! cmux send-key --workspace "$WS_REF" --surface "$SURFACE_REF" enter >/dev/null 2>&1; then
