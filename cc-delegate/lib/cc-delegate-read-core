@@ -8,7 +8,8 @@
 # Modes:
 #   read              Read scrollback once and exit.
 #   read-close        Read scrollback, then close the tab.
-#   read-wait         Poll for nonce, then read scrollback (no close). Requires <nonce>.
+#   read-wait         Poll for nonce, then print the sub-session's FINAL MESSAGE
+#                     from its transcript (no close). Requires <nonce>.
 #   read-wait-close   Poll for nonce, read, then close. Requires <nonce>.
 #   close             Close the tab without reading. Do not pass <nonce>.
 #
@@ -87,11 +88,17 @@ case "$MODE" in
 esac
 
 if [ -n "$WAIT_FOR" ]; then
+    # The sub-session's transcript, not the screen: cmux returns no scrollback
+    # for a Claude Code tab (a full-screen TUI), so a long run scrolls the
+    # pasted prompt away and the screen can never show the nonce twice. The
+    # transcript is matched by the nonce in the pasted prompt, so only that
+    # sub-session can answer, and the output is its final message alone.
+    LAST_MESSAGE="$(dirname "$0")/cc-delegate-last-message"
     MAX_ITERATIONS=108  # 108 * 5s = 9 min
     i=0
+    DONE_OUTPUT=""
     while [ $i -lt $MAX_ITERATIONS ]; do
-        count=$(cmux read-screen --workspace "$WS_REF" --surface "$SURFACE_REF" --scrollback 2>/dev/null | grep -cF "$WAIT_FOR" || true)
-        if [ "${count:-0}" -ge 2 ]; then
+        if DONE_OUTPUT=$("$LAST_MESSAGE" "$WAIT_FOR" 2>/dev/null); then
             break
         fi
         sleep 5
@@ -99,9 +106,11 @@ if [ -n "$WAIT_FOR" ]; then
     done
     if [ $i -ge $MAX_ITERATIONS ]; then
         echo "ERROR: timed out after 9 minutes waiting for nonce $WAIT_FOR" >&2
-        cmux read-screen --workspace "$WS_REF" --surface "$SURFACE_REF" --scrollback
+        "$LAST_MESSAGE" "$WAIT_FOR" || true
         exit 2
     fi
+    printf '%s\n' "$DONE_OUTPUT"
+    DO_READ=0
 fi
 
 if [ $DO_READ -eq 1 ]; then

@@ -21,9 +21,12 @@
 # No-op in raw mode (already nonce-free).
 #
 # --workspace REF|ID: open the tab in this workspace (workspace:N, or the
-# UUID from `cmux workspace list --json`). Default: the caller's own
-# workspace ($CMUX_WORKSPACE_ID); if that is unset or unknown to cmux, the
-# workspace selected in the cmux UI.
+# UUID from `cmux workspace list --json`). Default: the shared
+# "Claude_cc-delegate" workspace (bin/cc-delegate-workspace creates it at the
+# bottom of the sidebar when missing).
+#
+# --cwd DIR: directory the tab starts in. Default: the calling shell's own
+# directory ($PWD).
 #
 # --model NAME (cc/cc-plan): append `--model NAME` to the launched command.
 # Error in raw mode — nothing launches claude there, so it can't take effect.
@@ -79,7 +82,7 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         --help|-h)
-            sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -105,26 +108,20 @@ if ! cmux list-workspaces >/dev/null 2>&1; then
     exit 1
 fi
 
-# An explicit --workspace that matches nothing is an error; an unknown
-# $CMUX_WORKSPACE_ID (e.g. inherited from a workspace that has since closed)
-# just falls through to the selected workspace.
-ws_ref=""
-ws_query="${WORKSPACE:-${CMUX_WORKSPACE_ID:-}}"
-if [ -n "$ws_query" ]; then
+if [ -n "$WORKSPACE" ]; then
     ws_ref=$(CMUX_QUIET=1 cmux workspace list --json \
-        | jq -r --arg q "$ws_query" 'first(.workspaces[] | select(.id == $q or .ref == $q) | .ref)')
+        | jq -r --arg q "$WORKSPACE" 'first(.workspaces[] | select(.id == $q or .ref == $q) | .ref)')
+    if [ -z "$ws_ref" ]; then
+        echo "ERROR: --workspace $WORKSPACE matched no workspace ref or id in cmux workspace list --json" >&2
+        exit 1
+    fi
+else
+    ws_ref=$("$(dirname "$0")/../bin/cc-delegate-workspace")
 fi
-if [ -n "$WORKSPACE" ] && [ -z "$ws_ref" ]; then
-    echo "ERROR: --workspace $WORKSPACE matched no workspace ref or id in cmux workspace list --json" >&2
-    exit 1
-fi
-if [ -z "$ws_ref" ]; then
-    ws_ref=$(cmux list-workspaces | awk '/\[selected\]/ {print $2; exit}')
-fi
-if [ -z "${ws_ref:-}" ]; then
-    echo "ERROR: could not find selected workspace in cmux list-workspaces output" >&2
-    exit 1
-fi
+
+# Default to where the caller is: the shared workspace's own directory means
+# nothing to it.
+CWD="${CWD:-$PWD}"
 
 surface_output=$(cmux new-surface --workspace "$ws_ref")
 surface_ref=$(printf '%s\n' "$surface_output" | awk '{for (i=1; i<=NF; i++) if ($i ~ /^surface:/) { print $i; exit }}')
@@ -133,10 +130,8 @@ if [ -z "${surface_ref:-}" ]; then
     exit 1
 fi
 
-if [ -n "$CWD" ]; then
-    cmux send --workspace "$ws_ref" --surface "$surface_ref" -- "cd ${CWD}"'\n' >/dev/null
-    sleep 2
-fi
+cmux send --workspace "$ws_ref" --surface "$surface_ref" -- "cd '${CWD}'"'\n' >/dev/null
+sleep 2
 
 # Single-quoted in the spawned shell: a name like opus[1m] would otherwise
 # be globbed by zsh.

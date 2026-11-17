@@ -54,7 +54,7 @@ Stop. Wait for the user's next message. Do not poll unless asked.
 
 **`--no-nonce`** (all start commands and `cc-delegate-send`) — pass it when the prompt is a slash command (e.g. `/model Fable`); the appended nonce would stop it being a command. The prompt is pasted and submitted verbatim and no `nonce=` line prints — no completion signal, so `cc-delegate-read-wait*` won't work for that submission.
 
-**`--workspace <ref|id>`** (all start commands) — open the tab in that workspace (`workspace:N`, or the UUID from `cmux workspace list --json`). Default is the calling session's own workspace (`$CMUX_WORKSPACE_ID`), falling back to the one selected in the cmux UI only when that's unset or unknown to cmux — so tabs land where the caller is, not wherever happens to be selected.
+**`--workspace <ref|id>`** (all start commands) — open the tab in that workspace (`workspace:N`, or the UUID from `cmux workspace list --json`). Default is the shared `Claude_cc-delegate` workspace, created if missing and placed at the top of the `Claude_*` block at the bottom of the workspace list — so tabs never land in the caller's workspace or shift the Cmd+N numbering of the user's own workspaces. `--cwd` defaults to the delegating session's current directory.
 
 **`--model <name>`** (`cc-delegate-start-cc` and `cc-delegate-start-cc-plan`) — pass a model to the spawned `claude` (e.g. `--model opus`). Errors under `cc-delegate-start-raw`, which doesn't launch Claude.
 
@@ -64,8 +64,8 @@ Default path: the user reports completion and you read. Only use `cc-delegate-re
 
 - **`cc-delegate-read <ws_ref> <surface_ref>`** — read scrollback once, leave tab open. Use when a follow-up via `cc-delegate-send` is likely.
 - **`cc-delegate-read-close <ws_ref> <surface_ref>`** — read scrollback, then close the tab. Use when done with the sub-session.
-- **`cc-delegate-read-wait <ws_ref> <surface_ref> <nonce>`** — block until the nonce appears (polls every 5s, times out at ~9 min with exit 2), then read. Use only when the user asks you to monitor.
-- **`cc-delegate-read-wait-close <ws_ref> <surface_ref> <nonce>`** — block on nonce, read, then close. Use when asked to monitor *and* tear down when done.
+- **`cc-delegate-read-wait <ws_ref> <surface_ref> <nonce>`** — block until the sub-session has printed the nonce (polls its transcript every 5s, times out at ~9 min with exit 2), then print ONLY its final message — the text after its last tool call, nonce line removed. Matched by the nonce in the pasted prompt, so no other chat can answer. Use only when the user asks you to monitor.
+- **`cc-delegate-read-wait-close <ws_ref> <surface_ref> <nonce>`** — block on nonce, print the final message, then close. Use when asked to monitor *and* tear down when done.
 - **`cc-delegate-close <ws_ref> <surface_ref>`** — close without reading. Use when scrollback was already read in a prior turn, or when tearing down without caring about output.
 
 Don't echo the full buffer back — the user has usually already seen it, or asked you to monitor (which warrants a synthesis, not a replay). Summarize: highlight what matters, flag anything surprising or needing attention. Skip TUI chrome (borders, input box).

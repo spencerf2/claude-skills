@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# cc-delegate-workspace — print the ref of the shared "Claude_cc-delegate"
+# workspace, creating it when missing. A new one is placed directly before
+# the first existing "Claude_*" workspace, or last when there is none, so the
+# Claude_* workspaces stay one block at the bottom of the sidebar and never
+# shift the Cmd+N numbering of the user's own workspaces.
+# Usage: cc-delegate-workspace
+# Prints: workspace:N
+
+set -euo pipefail
+
+NAME="Claude_cc-delegate"
+
+list() { CMUX_QUIET=1 cmux workspace list --json; }
+
+ws_ref=$(list | jq -r --arg n "$NAME" \
+    'first(.workspaces[] | select(.custom_title == $n) | .ref) // empty')
+if [ -n "$ws_ref" ]; then
+    echo "$ws_ref"
+    exit 0
+fi
+
+# Find the first Claude_* workspace before creating ours, which would
+# otherwise match too.
+anchor=$(list | jq -r \
+    'first(.workspaces[] | select((.custom_title // "") | startswith("Claude_")) | .ref) // empty')
+
+out=$(CMUX_QUIET=1 cmux new-workspace --name "$NAME")
+ws_ref=$(printf '%s\n' "$out" | awk '{for (i=1; i<=NF; i++) if ($i ~ /^workspace:/) { print $i; exit }}')
+if [ -z "$ws_ref" ]; then
+    echo "ERROR: could not parse workspace ref from: $out" >&2
+    exit 1
+fi
+
+reorder() {
+    if [ -n "$anchor" ]; then
+        cmux reorder-workspace --workspace "$ws_ref" --before "$anchor" >/dev/null
+    else
+        cmux reorder-workspace --workspace "$ws_ref" --index 9999 >/dev/null
+    fi
+}
+# One retry, in case cmux hasn't finished registering the new workspace.
+reorder 2>/dev/null || { sleep 0.5; reorder; }
+
+echo "$ws_ref"

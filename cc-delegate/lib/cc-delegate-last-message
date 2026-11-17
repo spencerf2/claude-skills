@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""cc-delegate-last-message — the sub-session's final message, by nonce.
+
+Usage: cc-delegate-last-message <nonce> [--projects DIR] [--max-age-days N]
+
+Finds the ONE Claude Code transcript whose pasted prompt carried <nonce>
+(a plain user message — never a tool result, so the parent session that
+generated the nonce can't match) and prints the sub-session's final
+answer: the assistant text after its last tool call, with the nonce line
+removed. Exactly what a copy-paste of that chat's last message would give.
+
+Exit codes: 0 done (message printed); 3 session found but the nonce has
+not been printed yet; 4 no transcript carries the nonce as a prompt.
+"""
+
+import argparse
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+
+def _blocks(row):
+    content = (row.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    return content if isinstance(content, list) else []
+
+
+def _is_prompt_with(row, nonce):
+    """A user row that is the pasted prompt: plain text carrying the nonce,
+    and not a tool result (the parent's own transcript holds the nonce only
+    inside tool results and tool inputs)."""
+    if row.get("type") != "user":
+        return False
+    blocks = _blocks(row)
+    if any(b.get("type") == "tool_result" for b in blocks):
+        return False
+    return any(b.get("type") == "text" and nonce in (b.get("text") or "") for b in blocks)
+
+
+def _is_tool_result(row):
+    return row.get("type") == "user" and any(
+        b.get("type") == "tool_result" for b in _blocks(row)
+    )
+
+
+def _load(path):
+    rows = []
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return rows
+
+
+def find_session(projects, nonce, max_age_days):
+    cutoff = time.time() - max_age_days * 86400
+    hits = []
+    for path in projects.glob("*/*.jsonl"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                continue
+            with open(path, "rb") as fh:
+                if nonce.encode() not in fh.read():
+                    continue
+        except OSError:
+            continue
+        rows = _load(path)
+        for i, row in enumerate(rows):
+            if _is_prompt_with(row, nonce):
+                hits.append((path.stat().st_mtime, path, rows, i))
+                break
+    if not hits:
+        return None
+    hits.sort(key=lambda h: h[0])
+    return hits[-1][1:]  # newest: (path, rows, prompt_index)
+
+
+def final_answer(rows, prompt_index, nonce):
+    """The assistant text after the last tool result that follows the
+    prompt — the uninterrupted final answer — or None if the nonce has not
+    been printed in it yet."""
+    start = prompt_index
+    for i in range(prompt_index + 1, len(rows)):
+        if rows[i].get("type") != "user":
+            continue
+        if _is_tool_result(rows[i]):
+            start = i  # the final answer begins after the last tool result
+        else:
+            break  # a later plain prompt superseded this one
+    texts = []
+    for row in rows[start + 1 :]:
+        if row.get("type") != "assistant":
+            continue
+        for b in _blocks(row):
+            if b.get("type") == "text" and b.get("text"):
+                texts.append(b["text"])
+    joined = "\n".join(texts)
+    if nonce not in joined:
+        return None
+    lines = [ln for ln in joined.splitlines() if ln.strip() != nonce]
+    return "\n".join(lines).strip() + "\n"
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("nonce")
+    ap.add_argument("--projects", default=os.path.expanduser("~/.claude/projects"))
+    ap.add_argument("--max-age-days", type=int, default=3)
+    args = ap.parse_args()
+
+    found = find_session(Path(args.projects), args.nonce, args.max_age_days)
+    if found is None:
+        print(f"no transcript carries {args.nonce} as a pasted prompt", file=sys.stderr)
+        return 4
+    path, rows, prompt_index = found
+    answer = final_answer(rows, prompt_index, args.nonce)
+    if answer is None:
+        print(f"session {path.name} has not printed {args.nonce} yet", file=sys.stderr)
+        return 3
+    sys.stdout.write(answer)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
