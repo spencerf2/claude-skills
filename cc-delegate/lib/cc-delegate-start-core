@@ -2,7 +2,7 @@
 # cc-delegate-start-core — shared implementation for the cc-delegate-start-* wrappers.
 # Do not invoke directly from SKILL.md; use the bin/cc-delegate-start-* wrappers instead.
 #
-# Usage: cc-delegate-start-core --mode {cc|cc-plan|raw} [--cwd DIR] [--no-nonce]
+# Usage: cc-delegate-start-core --mode {cc|cc-plan|codex|raw} [--cwd DIR] [--no-nonce]
 #                               [--workspace REF|ID] [--model NAME]
 # Prompt is read from stdin.
 #
@@ -11,11 +11,13 @@
 #               Appends a completion-sentinel nonce to the prompt.
 #   cc-plan     Launch `claude --permission-mode plan`.
 #               Appends a completion-sentinel nonce to the prompt.
+#   codex       Launch `codex` (Codex CLI).
+#               Appends a completion-sentinel nonce to the prompt.
 #   raw         Skip the cc launch entirely. Stdin is pasted verbatim into a fresh
 #               shell prompt and Enter is hit — fire-and-forget shell command.
 #               No nonce. Do not follow up with cc-delegate-send.
 #
-# --no-nonce (cc/cc-plan): paste and submit the prompt verbatim — no
+# --no-nonce (cc/cc-plan/codex): paste and submit the prompt verbatim — no
 # sentinel appended, no nonce= line printed. Needed for slash-command
 # prompts, which the appended sentinel would stop being treated as commands.
 # No-op in raw mode (already nonce-free).
@@ -28,8 +30,8 @@
 # --cwd DIR: directory the tab starts in. Default: the calling shell's own
 # directory ($PWD).
 #
-# --model NAME (cc/cc-plan): append `--model NAME` to the launched command.
-# Error in raw mode — nothing launches claude there, so it can't take effect.
+# --model NAME (cc/cc-plan/codex): append `--model NAME` to the launched command.
+# Error in raw mode — no sub-session is launched there, so it can't take effect.
 #
 # On success, prints to stdout:
 #   ws_ref=workspace:N
@@ -59,7 +61,7 @@ while [ $# -gt 0 ]; do
             ;;
         --mode)
             if [ $# -lt 2 ]; then
-                echo "ERROR: --mode requires a value (cc|cc-plan|raw)" >&2
+                echo "ERROR: --mode requires a value (cc|cc-plan|codex|raw)" >&2
                 exit 1
             fi
             MODE="$2"
@@ -82,7 +84,7 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         --help|-h)
-            sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -93,13 +95,13 @@ while [ $# -gt 0 ]; do
 done
 
 case "$MODE" in
-    cc|cc-plan|raw) ;;
-    "") echo "ERROR: --mode is required (cc|cc-plan|raw)" >&2; exit 1 ;;
-    *)  echo "ERROR: invalid --mode: $MODE (expected cc|cc-plan|raw)" >&2; exit 1 ;;
+    cc|cc-plan|codex|raw) ;;
+    "") echo "ERROR: --mode is required (cc|cc-plan|codex|raw)" >&2; exit 1 ;;
+    *)  echo "ERROR: invalid --mode: $MODE (expected cc|cc-plan|codex|raw)" >&2; exit 1 ;;
 esac
 
 if [ "$MODE" = "raw" ] && [ -n "$MODEL" ]; then
-    echo "ERROR: --model has no effect in raw mode (nothing launches claude)" >&2
+    echo "ERROR: --model has no effect in raw mode (raw mode launches no sub-session)" >&2
     exit 1
 fi
 
@@ -147,6 +149,10 @@ case "$MODE" in
         ;;
     cc-plan)
         cmux send --workspace "$ws_ref" --surface "$surface_ref" -- "claude --permission-mode plan${MODEL_ARG}"'\n' >/dev/null
+        sleep 6
+        ;;
+    codex)
+        cmux send --workspace "$ws_ref" --surface "$surface_ref" -- "codex${MODEL_ARG}"'\n' >/dev/null
         sleep 6
         ;;
     raw)

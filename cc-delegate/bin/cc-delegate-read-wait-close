@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
-# cc-delegate-read-wait-close — poll until nonce appears, read scrollback, then close.
+# cc-delegate-read-wait-close — wait for the sub-session's answer, print it, then close.
 # Usage: cc-delegate-read-wait-close <ws_ref> <surface_ref> <nonce>
 exec "$(dirname "$0")/../lib/cc-delegate-read-core" --mode read-wait-close "$@"

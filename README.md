@@ -6,7 +6,7 @@ Shared [Claude Code](https://docs.claude.com/en/docs/claude-code) skills.
 
 ### `cc-delegate`
 
-Spawn a sub Claude Code session in a new [cmux](https://github.com/manaflow-ai/cmux) tab, paste a prompt, hit Enter, and — when you say it's done — read the output. Also supports raw shell commands (fire-and-forget) via `--raw`.
+Spawn a sub Claude Code session in a new [cmux](https://github.com/manaflow-ai/cmux) tab, paste a prompt, hit Enter, and — when you say it's done — read the output. Also supports raw shell commands (fire-and-forget) via `--raw`. The sub-session can also be a Codex CLI session.
 
 See [`cc-delegate/SKILL.md`](cc-delegate/SKILL.md) for the full skill definition.
 

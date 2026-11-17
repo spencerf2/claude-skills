@@ -3,14 +3,30 @@
 
 Usage: cc-delegate-last-message <nonce> [--projects DIR] [--max-age-days N]
 
-Finds the ONE Claude Code transcript whose pasted prompt carried <nonce>
-(a plain user message — never a tool result, so the parent session that
-generated the nonce can't match) and prints the sub-session's final
-answer: the assistant text after its last tool call, with the nonce line
-removed. Exactly what a copy-paste of that chat's last message would give.
+Finds the ONE chat whose pasted prompt carried <nonce> and prints the
+sub-session's final answer, with lines that are exactly the nonce removed.
+Exactly what a copy-paste of the sub-session's final reply to that prompt
+would give.
 
-Exit codes: 0 done (message printed); 3 session found but the nonce has
-not been printed yet; 4 no transcript carries the nonce as a prompt.
+The prompt is recognised by the instruction cc-delegate-send appends,
+ending "(nothing else on that line): <nonce>", not by the bare nonce.
+
+Claude Code transcripts (--projects) are searched first. The prompt is a
+plain user message — never a tool result, so the parent session that
+generated the nonce can't match. The answer is the assistant text after the
+last tool call; it is done once it has printed the nonce.
+
+Only when no Claude Code transcript carries the nonce as a prompt are Codex
+CLI session files searched ($CODEX_HOME/sessions, default ~/.codex/sessions).
+The prompt is a UserMessage item — never command output, so a parent Codex
+chat can't match. The answer is the last_agent_message on that turn's
+task_complete row: the turn ending is the done signal, whether or not the
+reply printed the nonce. Codex does not document these rows; they were
+checked on Codex CLI 0.166.0 and 0.169.0.
+
+Exit codes: 0 done (message printed); 3 chat found but not done yet (Claude
+Code: the nonce has not been printed; Codex: the turn has not ended); 4 no
+transcript or session file carries the nonce as a prompt.
 """
 
 import argparse
@@ -28,16 +44,26 @@ def _blocks(row):
     return content if isinstance(content, list) else []
 
 
+def _nonce_instruction(nonce):
+    """The end of the instruction bin/cc-delegate-send appends to the prompt,
+    nonce included. The prompt is recognised by this text, not the bare
+    nonce, because the user may paste the nonce to the calling chat ("done,
+    it printed <nonce>"); that chat would then look like the sub-session.
+    Must match the wording cc-delegate-send appends."""
+    return f"(nothing else on that line): {nonce}"
+
+
 def _is_prompt_with(row, nonce):
-    """A user row that is the pasted prompt: plain text carrying the nonce,
-    and not a tool result (the parent's own transcript holds the nonce only
-    inside tool results and tool inputs)."""
+    """A user row that is the pasted prompt: plain text carrying the nonce
+    instruction, and not a tool result (the parent's own transcript holds
+    the nonce inside tool results and tool inputs)."""
     if row.get("type") != "user":
         return False
     blocks = _blocks(row)
     if any(b.get("type") == "tool_result" for b in blocks):
         return False
-    return any(b.get("type") == "text" and nonce in (b.get("text") or "") for b in blocks)
+    instruction = _nonce_instruction(nonce)
+    return any(b.get("type") == "text" and instruction in (b.get("text") or "") for b in blocks)
 
 
 def _is_tool_result(row):
@@ -60,12 +86,17 @@ def _load(path):
     return rows
 
 
-def find_session(projects, nonce, max_age_days):
+def _newest_with_prompt(paths, nonce, max_age_days, find_prompt):
+    """Return (path, rows, what find_prompt returned) for the newest file in
+    which find_prompt(rows, nonce) finds the prompt. Returns None when no
+    file has it. Files older than max_age_days, or whose bytes lack the
+    nonce, are skipped before any JSON is parsed."""
     cutoff = time.time() - max_age_days * 86400
     hits = []
-    for path in projects.glob("*/*.jsonl"):
+    for path in paths:
         try:
-            if path.stat().st_mtime < cutoff:
+            mtime = path.stat().st_mtime
+            if mtime < cutoff:
                 continue
             with open(path, "rb") as fh:
                 if nonce.encode() not in fh.read():
@@ -73,14 +104,23 @@ def find_session(projects, nonce, max_age_days):
         except OSError:
             continue
         rows = _load(path)
-        for i, row in enumerate(rows):
-            if _is_prompt_with(row, nonce):
-                hits.append((path.stat().st_mtime, path, rows, i))
-                break
+        found = find_prompt(rows, nonce)
+        if found is not None:
+            hits.append((mtime, path, rows, found))
     if not hits:
         return None
     hits.sort(key=lambda h: h[0])
-    return hits[-1][1:]  # newest: (path, rows, prompt_index)
+    return hits[-1][1:]
+
+
+def _prompt_index(rows, nonce):
+    return next((i for i, row in enumerate(rows) if _is_prompt_with(row, nonce)), None)
+
+
+def find_session(projects, nonce, max_age_days):
+    """Newest Claude Code transcript carrying the prompt, as
+    (path, rows, prompt_index). Returns None when there is none."""
+    return _newest_with_prompt(projects.glob("*/*.jsonl"), nonce, max_age_days, _prompt_index)
 
 
 def final_answer(rows, prompt_index, nonce):
@@ -105,8 +145,56 @@ def final_answer(rows, prompt_index, nonce):
     joined = "\n".join(texts)
     if nonce not in joined:
         return None
-    lines = [ln for ln in joined.splitlines() if ln.strip() != nonce]
+    return _without_nonce_lines(joined, nonce)
+
+
+def _without_nonce_lines(text, nonce):
+    lines = [ln for ln in text.splitlines() if ln.strip() != nonce]
     return "\n".join(lines).strip() + "\n"
+
+
+def _payload(row):
+    return row.get("payload") or {}
+
+
+def _codex_prompt_turn(rows, nonce):
+    """turn_id of the first UserMessage item carrying the nonce instruction.
+    Returns None when no such item exists. Only UserMessage items count:
+    they are the typed prompts and carry the turn_id, while a parent chat
+    that ran the cc-delegate scripts holds the nonce only in command output."""
+    instruction = _nonce_instruction(nonce)
+    for row in rows:
+        p = _payload(row)
+        item = p.get("item") or {}
+        if (
+            row.get("type") == "event_msg"
+            and p.get("type") == "item_completed"
+            and item.get("type") == "UserMessage"
+            and any(instruction in (b.get("text") or "") for b in item.get("content") or [])
+        ):
+            return p.get("turn_id")
+    return None
+
+
+def find_codex_session(codex_home, nonce, max_age_days):
+    """Newest Codex session file carrying the prompt, as
+    (path, rows, turn_id). Returns None when there is none."""
+    paths = (codex_home / "sessions").rglob("*.jsonl")
+    return _newest_with_prompt(paths, nonce, max_age_days, _codex_prompt_turn)
+
+
+def codex_final_answer(rows, turn_id, nonce):
+    """The prompt turn's last_agent_message with nonce lines removed. Returns
+    None when that turn has not ended (it has no task_complete row yet)."""
+    for row in rows:
+        p = _payload(row)
+        if (
+            row.get("type") == "event_msg"
+            and p.get("type") == "task_complete"
+            and p.get("turn_id") == turn_id
+        ):
+            return _without_nonce_lines(p.get("last_agent_message") or "", nonce)
+    return None
 
 
 def main():
@@ -117,13 +205,27 @@ def main():
     args = ap.parse_args()
 
     found = find_session(Path(args.projects), args.nonce, args.max_age_days)
+    if found is not None:
+        path, rows, prompt_index = found
+        answer = final_answer(rows, prompt_index, args.nonce)
+        if answer is None:
+            print(f"session {path.name} has not printed {args.nonce} yet", file=sys.stderr)
+            return 3
+        sys.stdout.write(answer)
+        return 0
+
+    codex_home = Path(os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"))
+    found = find_codex_session(codex_home, args.nonce, args.max_age_days)
     if found is None:
         print(f"no transcript carries {args.nonce} as a pasted prompt", file=sys.stderr)
         return 4
-    path, rows, prompt_index = found
-    answer = final_answer(rows, prompt_index, args.nonce)
+    path, rows, turn_id = found
+    answer = codex_final_answer(rows, turn_id, args.nonce)
     if answer is None:
-        print(f"session {path.name} has not printed {args.nonce} yet", file=sys.stderr)
+        print(
+            f"codex session {path.name} has not finished the turn for {args.nonce}",
+            file=sys.stderr,
+        )
         return 3
     sys.stdout.write(answer)
     return 0

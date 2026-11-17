@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# cc-delegate-start-codex — open a new cmux tab and launch `codex` (Codex
+# CLI). Prompt is read from stdin.
+# --no-nonce pastes and submits the prompt verbatim, for slash-command
+# prompts: no completion sentinel appended, no nonce= line printed.
+# Thin wrapper around lib/cc-delegate-start-core --mode codex.
+exec "$(dirname "$0")/../lib/cc-delegate-start-core" --mode codex "$@"

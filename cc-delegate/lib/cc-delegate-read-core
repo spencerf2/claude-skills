@@ -9,15 +9,17 @@
 #   read              Read scrollback once and exit.
 #   read-close        Read scrollback, then close the tab.
 #   read-wait         Poll for nonce, then print the sub-session's FINAL MESSAGE
-#                     from its transcript (no close). Requires <nonce>.
+#                     from its transcript or Codex session file (no close).
+#                     Requires <nonce>.
 #   read-wait-close   Poll for nonce, read, then close. Requires <nonce>.
 #   close             Close the tab without reading. Do not pass <nonce>.
 #
-# Poll behavior: every 5s, looks for the nonce to appear >=2 times in the buffer
-# (once from the pasted prompt, once from sub-cc's reply). Times out after ~9 min
-# and exits 2. On timeout, prints whatever scrollback exists so far.
+# Poll behavior: every 5s, runs lib/cc-delegate-last-message until it exits 0;
+# that reads the sub-session's Claude Code transcript or Codex session file.
+# Times out after ~9 min and exits 2, after one last run whose stderr says why.
 #
-# Close behavior: sends Ctrl+C twice to gracefully exit cc, then destroys the tab.
+# Close behavior: sends Ctrl+C twice to gracefully exit the sub-session, then
+# destroys the tab.
 
 set -euo pipefail
 
@@ -37,7 +39,7 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         --help|-h)
-            sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         -*)
@@ -88,11 +90,11 @@ case "$MODE" in
 esac
 
 if [ -n "$WAIT_FOR" ]; then
-    # The sub-session's transcript, not the screen: cmux returns no scrollback
-    # for a Claude Code tab (a full-screen TUI), so a long run scrolls the
-    # pasted prompt away and the screen can never show the nonce twice. The
-    # transcript is matched by the nonce in the pasted prompt, so only that
-    # sub-session can answer, and the output is its final message alone.
+    # Reads the sub-session's Claude Code transcript or Codex session file, not
+    # the screen: both are full-screen TUIs, for which cmux returns no
+    # scrollback, so the screen holds only the end of a long reply. The file
+    # is matched by the nonce in the pasted prompt, so only that sub-session
+    # can answer, and the output is its final message alone.
     LAST_MESSAGE="$(dirname "$0")/cc-delegate-last-message"
     MAX_ITERATIONS=108  # 108 * 5s = 9 min
     i=0

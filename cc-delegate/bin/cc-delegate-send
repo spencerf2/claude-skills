@@ -39,6 +39,9 @@
 # sending more — a redraw means the bytes were read, so at most one piece is
 # ever queued in the pty. If the target stops redrawing, this fails loudly
 # instead of truncating.
+#
+# Codex CLI (checked on 0.169.0) takes the same input; alt+enter is a newline
+# there too.
 
 set -euo pipefail
 
@@ -92,6 +95,7 @@ fi
 
 if [ "$NONCE_MODE" -eq 1 ]; then
     NONCE="CC_DELEGATE_DONE_$(openssl rand -hex 6)"
+    # lib/cc-delegate-last-message recognises the prompt by this wording.
     PROMPT="${PROMPT}
 
 When you have finished answering, print exactly this string on its own final line (nothing else on that line): ${NONCE}"
@@ -108,7 +112,7 @@ TEXT=${PROMPT//$'\r'/}
 # leaves tabs alone.
 if [ "$SHELL_MODE" -eq 0 ] && [[ "$TEXT" == *$'\t'* ]]; then
     TEXT=${TEXT//$'\t'/    }
-    echo "NOTE: tabs in the prompt were replaced with four spaces (Claude Code drops a Tab keystroke)" >&2
+    echo "NOTE: tabs in the prompt were replaced with four spaces (a Tab keystroke would not be typed as a tab)" >&2
 fi
 
 PIECE_MAX=512      # comfortably under the ~1 KB pty input queue
