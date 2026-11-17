@@ -10,7 +10,7 @@ Spawn a sub Claude Code session in a new [cmux](https://github.com/manaflow-ai/c
 
 See [`cc-delegate/SKILL.md`](cc-delegate/SKILL.md) for the full skill definition.
 
-**Requirements:** `cmux`, `openssl`, `awk`, and a `cc` alias for `claude` in your shell.
+**Requirements:** `cmux`, `openssl`, `awk`, Python 3.10 or newer, and a `cc` alias for `claude` in your shell.
 
 ## Install
 

@@ -67,7 +67,7 @@ Don't wait on a sub-session unless asked to monitor. Once the user reports compl
 - **`cc-delegate-read-wait-close <ws_ref> <surface_ref> <nonce>`** — block on nonce, print the final message, then close. Use when done with the sub-session.
 - **`cc-delegate-read <ws_ref> <surface_ref>`** — read scrollback once, leave tab open.
 - **`cc-delegate-read-close <ws_ref> <surface_ref>`** — read scrollback, then close the tab.
-- **`cc-delegate-close <ws_ref> <surface_ref>`** — close without reading. Use when scrollback was already read in a prior turn, or when tearing down without caring about output.
+- **`cc-delegate-close <ws_ref> <surface_ref>`** — close without reading. Use when the output was already read in a prior turn, or when tearing down without caring about output.
 
 Don't echo the full buffer back — the user has usually already seen it, or asked you to monitor (which warrants a synthesis, not a replay). Summarize: highlight what matters, flag anything surprising or needing attention. Skip TUI chrome (borders, input box).
 

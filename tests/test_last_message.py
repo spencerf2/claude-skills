@@ -15,8 +15,25 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "cc-delegate" / "lib" / "cc-delegate-last-message"
+SEND_SCRIPT = REPO_ROOT / "cc-delegate" / "bin" / "cc-delegate-send"
 NONCE = "CC_DELEGATE_DONE_0a1b2c3d4e5f"
 OTHER_NONCE = "CC_DELEGATE_DONE_ffeeddccbbaa"
+
+
+def instruction_appended_by_send(nonce: str) -> str:
+    """The instruction line exactly as cc-delegate-send writes it, read from
+    that script with its ${NONCE} filled in. The lookup recognises the prompt
+    by this wording, so the two scripts must change together."""
+    lines = [
+        line
+        for line in SEND_SCRIPT.read_text(encoding="utf-8").splitlines()
+        if "${NONCE}" in line
+    ]
+    if len(lines) != 1:
+        raise AssertionError(
+            f"expected one line with ${{NONCE}} in {SEND_SCRIPT.name}, found {len(lines)}"
+        )
+    return lines[0].removesuffix('"').replace("${NONCE}", nonce)
 
 
 def prompt_with(nonce: str, body: str = "Summarise the README.") -> str:
@@ -447,6 +464,21 @@ class CallingChatTests(LastMessageTestCase):
         )
         set_modified_time(sub_session, seconds_ago=120)
         self.write_calling_chat()
+
+        result = self.run_last_message()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "The README is one heading.\n")
+
+
+class SendScriptWordingTests(LastMessageTestCase):
+    def test_the_instruction_cc_delegate_send_appends_is_recognised_as_the_prompt(self):
+        self.write_claude_transcript(
+            [
+                claude_prompt(f"Summarise the README.\n\n{instruction_appended_by_send(NONCE)}"),
+                claude_text(f"The README is one heading.\n{NONCE}"),
+            ]
+        )
 
         result = self.run_last_message()
 
